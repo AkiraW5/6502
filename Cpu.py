@@ -200,25 +200,31 @@ class CPU:
         high_byte = self.pop_stack()
         return (high_byte << 8) | low_byte
 
+    def decode_instruction(self, opcode):
+        for instruction, info in self.opcode_table.items():
+            if opcode in [code for code, mode, cycles in info[1]]:
+                return instruction
+        raise ValueError(f"Opcode {opcode} not found.")
+
     def execute(self, opcode, addressing_mode):
         print(f"Modo de endereçamento: {addressing_mode}")
-        if addressing_mode == 'immediate':
+        value = None  # valor padrão
+        if addressing_mode == 'immediate' or addressing_mode == 'Imm':
             value = self.fetch_byte()
-        elif addressing_mode == 'zero_page':
+        elif addressing_mode == 'zero_page' or addressing_mode == 'ZP':
             address = self.zero_page_address()
-            value = self.read_byte(address)
+            value = self.bus.read(address)
         elif addressing_mode == 'absolute':
             address = self.absolute_address()
-            value = self.read_byte(address)
-        # adicione mais condições conforme necessário
-        # ...
-
-        # execute a instrução
+            value = self.bus.read(address)
+        
         instruction = self.decode_instruction(opcode)
-        getattr(self, instruction)(value)
+        if value is not None:
+            getattr(self, instruction)(value)
+        else:
+            print(f"Modo de endereçamento {addressing_mode} não suportado.")
 
-    def ADC(self):
-        value = self.fetch_byte()
+    def ADC(self, value):
         a = self.registers.get_register('A')
         c = self.registers.get_flag('C')
         result = a + value + c
@@ -275,7 +281,7 @@ class CPU:
             self.memory[addr] = value
         else:
             raise ValueError(f'Modo de endereçamento {addressing_mode} não suportado')
-
+        
 
     def read_pc(self):
         value = self.bus.read(self.registers.get_register('PC'))
@@ -342,7 +348,7 @@ class CPU:
 
 
     def load_and_execute_program(self, filename):
-        address = 0x0100
+        address = 0x0600
 
         with open(filename, 'r') as file:
             for line in file:
@@ -355,8 +361,6 @@ class CPU:
         self.registers.update_register('PC', 0x0100)
         self.run()
 
-with open('program.txt', 'w') as file:
-    file.write('A9 01 8D 00 02 A9 05 8D 01 02 A9 08 8D 02 02')
 
 bus = Bus()
 cpu = CPU(bus)
