@@ -157,6 +157,8 @@ class CPU:
         self.halted = False
         self.cycles = 0 # Contador de ciclos para a instrução *atual*
         self.total_cycles = 0 # Contador de ciclos *total* desde o reset
+        self.addr_rel = 0  # Endereço relativo para instruções de branch
+        self.addr_abs = 0  # Endereço absoluto para acesso à memória
 
         # Tabela de Lookup: Mapeia cada opcode (0-255) para uma tupla:
         # (função_da_instrução, função_do_modo_de_endereçamento, ciclos_base)
@@ -236,11 +238,25 @@ class CPU:
         table[0x40] = (self.RTI, self.IMP, 6)
 
         # --- Instruções de Desvio Condicional (Branch) ---
-        # TODO: Implementar BCC, BCS, BEQ, BMI, BNE, BPL, BVC, BVS
+        table[0x90] = (self.BCC, self.REL, 2)  # BCC - Branch if Carry Clear
+        table[0xB0] = (self.BCS, self.REL, 2)  # BCS - Branch if Carry Set
+        table[0xF0] = (self.BEQ, self.REL, 2)  # BEQ - Branch if Equal
+        table[0x30] = (self.BMI, self.REL, 2)  # BMI - Branch if Minus
+        table[0xD0] = (self.BNE, self.REL, 2)  # BNE - Branch if Not Equal
+        table[0x10] = (self.BPL, self.REL, 2)  # BPL - Branch if Plus
+        table[0x50] = (self.BVC, self.REL, 2)  # BVC - Branch if Overflow Clear
+        table[0x70] = (self.BVS, self.REL, 2)  # BVS - Branch if Overflow Set
 
         # --- Instruções de Comparação ---
-        # TODO: Implementar CMP, CPX, CPY
-        # TODO: Implementar BIT
+        table[0xC9] = (self.CMP, self.IMM, 2); table[0xC5] = (self.CMP, self.ZP0, 3)
+        table[0xD5] = (self.CMP, self.ZPX, 4); table[0xCD] = (self.CMP, self.ABS, 4)
+        table[0xDD] = (self.CMP, self.ABX, 4); table[0xD9] = (self.CMP, self.ABY, 4)
+        table[0xC1] = (self.CMP, self.IZX, 6); table[0xD1] = (self.CMP, self.IZY, 5)
+        table[0xE0] = (self.CPX, self.IMM, 2); table[0xE4] = (self.CPX, self.ZP0, 3)
+        table[0xEC] = (self.CPX, self.ABS, 4)
+        table[0xC0] = (self.CPY, self.IMM, 2); table[0xC4] = (self.CPY, self.ZP0, 3)
+        table[0xCC] = (self.CPY, self.ABS, 4)
+        table[0x24] = (self.BIT, self.ZP0, 3); table[0x2C] = (self.BIT, self.ABS, 4)
 
         # --- Instruções de Transferência entre Registradores ---
         table[0xAA] = (self.TAX, self.IMP, 2); table[0x8A] = (self.TXA, self.IMP, 2)
@@ -364,42 +380,62 @@ class CPU:
         page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00)
         return addr, page_crossed
 
-    def IND(self): # Indirect (Apenas para JMP)
-        """Modo Indireto: Lê o endereço de destino de outro endereço na memória.
-           Simula o bug de hardware do 6502 ao cruzar páginas no ponteiro.
+    def IND(self): # Indirect
+        """Modo Indireto: Lê um endereço de 16 bits e usa o valor nesse endereço como endereço final.
+        
+        Nota: Implementa o bug do 6502 onde, se o endereço indireto estiver no final de uma página,
+        o byte alto é lido do início da mesma página, não da próxima.
         """
-        ptr_addr = self.fetch_word()
-        # Simula o bug: se o byte baixo do ponteiro é 0xFF, o byte alto é lido
-        # da mesma página, não da página seguinte.
-        if (ptr_addr & 0x00FF) == 0x00FF:
-            low_byte = self.read(ptr_addr)
-            high_byte = self.read(ptr_addr & 0xFF00) # Bug: lê do início da mesma página (ex: $xxFF -> lê $xxFF e $xx00)
+        ptr = self.fetch_word()
+        
+        # Simula o bug do 6502 na leitura indireta
+        if (ptr & 0x00FF) == 0x00FF:
+            # Se o ponteiro estiver no final de uma página, o byte alto é lido do início da mesma página
+            low_byte = self.read(ptr)
+            high_byte = self.read(ptr & 0xFF00) # Wrap around na mesma página
         else:
-            low_byte = self.read(ptr_addr)
-            high_byte = self.read(ptr_addr + 1)
+            # Caso normal: lê dois bytes consecutivos
+            low_byte = self.read(ptr)
+            high_byte = self.read(ptr + 1)
+        
         addr = (high_byte << 8) | low_byte
         return addr, False
 
-    def IZX(self): # Indirect, X (Indexed Indirect)
-        """Modo Indireto Indexado com X: Endereço = word[byte + X]."""
-        base_ptr = self.fetch_byte()
-        ptr_addr = (base_ptr + self.regs.x) & 0x00FF # Endereço do ponteiro na página zero
-        # Lê o endereço final (little-endian) da página zero
-        low_byte = self.read(ptr_addr)
-        high_byte = self.read((ptr_addr + 1) & 0x00FF) # Wrap around na página zero
+    def IZX(self): # Indexed Indirect (Pre-Indexed)
+        """Modo Indexado Indireto (X): Endereço = conteúdo em [(byte + X) & 0xFF, (byte + X + 1) & 0xFF]."""
+        # Lê o byte base da página zero
+        base = self.fetch_byte()
+        
+        # Adiciona X com wrap na página zero
+        ptr = (base + self.regs.x) & 0xFF
+        
+        # Lê o endereço de 16 bits da página zero
+        # Simula o wrap-around na página zero
+        low_byte = self.read(ptr)
+        high_byte = self.read((ptr + 1) & 0xFF)
+        
         addr = (high_byte << 8) | low_byte
         return addr, False
 
-    def IZY(self): # Indirect, Y (Indirect Indexed)
-        """Modo Indireto Indexado com Y: Endereço = word[byte] + Y."""
-        ptr_addr = self.fetch_byte() & 0x00FF # Endereço do ponteiro na página zero
-        # Lê o endereço base (little-endian) da página zero
-        low_byte = self.read(ptr_addr)
-        high_byte = self.read((ptr_addr + 1) & 0x00FF) # Wrap around na página zero
+    def IZY(self): # Indirect Indexed (Post-Indexed)
+        """Modo Indireto Indexado (Y): Endereço = conteúdo em [byte, (byte + 1) & 0xFF] + Y."""
+        # Lê o byte base da página zero
+        base = self.fetch_byte()
+        
+        # Lê o endereço de 16 bits da página zero
+        # Simula o wrap-around na página zero
+        low_byte = self.read(base)
+        high_byte = self.read((base + 1) & 0xFF)
+        
+        # Forma o endereço base de 16 bits
         base_addr = (high_byte << 8) | low_byte
+        
         # Adiciona Y ao endereço base
         addr = (base_addr + self.regs.y) & 0xFFFF
+        
+        # Verifica se houve cruzamento de página
         page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00)
+        
         return addr, page_crossed
 
     def REL(self): # Relative (Para Branches)
@@ -408,7 +444,8 @@ class CPU:
         # Converte para offset com sinal (complemento de dois)
         if offset & 0x80:
             offset = offset - 0x100
-        # Retorna o offset. O cálculo do endereço final é feito na instrução de branch.
+        # Armazena o offset para uso na instrução de branch
+        self.addr_rel = offset
         return offset, False
 
     # --- Função Auxiliar para Buscar Operando --- 
@@ -685,6 +722,207 @@ class CPU:
         
         return 0
 
+    # --- Instruções de Branch (Desvio Condicional) ---
+    def BCC(self, addr_mode_func):
+        """Instrução BCC: Branch if Carry Clear (C=0)."""
+        # Obtém o offset relativo
+        addr_mode_func()  # Chama o modo de endereçamento para obter o offset
+        
+        # Ciclos adicionais se o branch for tomado
+        extra_cycles = 0
+        
+        # Verifica a condição (Carry Clear)
+        if self.regs.c == 0:
+            # Calcula o endereço de destino
+            # PC já aponta para a próxima instrução após o branch
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            # Adiciona 1 ciclo se o branch for tomado
+            extra_cycles = 1
+            
+            # Adiciona mais 1 ciclo se o branch cruzar uma página
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BCS(self, addr_mode_func):
+        """Instrução BCS: Branch if Carry Set (C=1)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.c == 1:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BEQ(self, addr_mode_func):
+        """Instrução BEQ: Branch if Equal (Z=1)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.z == 1:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BMI(self, addr_mode_func):
+        """Instrução BMI: Branch if Minus (N=1)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.n == 1:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BNE(self, addr_mode_func):
+        """Instrução BNE: Branch if Not Equal (Z=0)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.z == 0:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BPL(self, addr_mode_func):
+        """Instrução BPL: Branch if Plus (N=0)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.n == 0:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BVC(self, addr_mode_func):
+        """Instrução BVC: Branch if Overflow Clear (V=0)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.v == 0:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    def BVS(self, addr_mode_func):
+        """Instrução BVS: Branch if Overflow Set (V=1)."""
+        addr_mode_func()
+        
+        extra_cycles = 0
+        
+        if self.regs.v == 1:
+            old_pc = self.regs.pc
+            self.regs.pc = (self.regs.pc + self.addr_rel) & 0xFFFF
+            
+            extra_cycles = 1
+            
+            if (old_pc & 0xFF00) != (self.regs.pc & 0xFF00):
+                extra_cycles += 1
+        
+        return extra_cycles
+
+    # --- Instruções de Comparação ---
+    def CMP(self, addr_mode_func):
+        """Instrução CMP: Compare Accumulator (Compara Acumulador com operando)."""
+        operand, page_crossed = self.fetch_operand(addr_mode_func)
+        
+        # Realiza a comparação (subtração sem afetar o acumulador)
+        result = (self.regs.a - operand) & 0xFF
+        
+        # Atualiza flags
+        self.regs.c = 1 if self.regs.a >= operand else 0  # Carry set se A >= operando
+        self.regs.update_flag_z(result)  # Zero set se A == operando
+        self.regs.update_flag_n(result)  # Negative set se bit 7 do resultado for 1
+        
+        return 1 if page_crossed else 0
+
+    def CPX(self, addr_mode_func):
+        """Instrução CPX: Compare X Register (Compara Registrador X com operando)."""
+        operand, page_crossed = self.fetch_operand(addr_mode_func)
+        
+        # Realiza a comparação (subtração sem afetar o registrador X)
+        result = (self.regs.x - operand) & 0xFF
+        
+        # Atualiza flags
+        self.regs.c = 1 if self.regs.x >= operand else 0  # Carry set se X >= operando
+        self.regs.update_flag_z(result)  # Zero set se X == operando
+        self.regs.update_flag_n(result)  # Negative set se bit 7 do resultado for 1
+        
+        return 0  # CPX não tem ciclos adicionais por page crossing
+
+    def CPY(self, addr_mode_func):
+        """Instrução CPY: Compare Y Register (Compara Registrador Y com operando)."""
+        operand, page_crossed = self.fetch_operand(addr_mode_func)
+        
+        # Realiza a comparação (subtração sem afetar o registrador Y)
+        result = (self.regs.y - operand) & 0xFF
+        
+        # Atualiza flags
+        self.regs.c = 1 if self.regs.y >= operand else 0  # Carry set se Y >= operando
+        self.regs.update_flag_z(result)  # Zero set se Y == operando
+        self.regs.update_flag_n(result)  # Negative set se bit 7 do resultado for 1
+        
+        return 0  # CPY não tem ciclos adicionais por page crossing
+
+    def BIT(self, addr_mode_func):
+        """Instrução BIT: Bit Test (Testa bits entre Acumulador e operando)."""
+        operand, page_crossed = self.fetch_operand(addr_mode_func)
+        
+        # Realiza o teste de bits (AND lógico, mas sem afetar o acumulador)
+        result = self.regs.a & operand
+        
+        # Atualiza flags
+        self.regs.update_flag_z(result)  # Zero set se resultado do AND for 0
+        self.regs.n = 1 if (operand & 0x80) else 0  # Bit 7 do operando vai para N
+        self.regs.v = 1 if (operand & 0x40) else 0  # Bit 6 do operando vai para V
+        
+        return 0  # BIT não tem ciclos adicionais por page crossing
+
     # --- Instruções de Transferência entre Registradores ---
     def TAX(self, addr_mode_func):
         """Instrução TAX: Transfer Accumulator to X."""
@@ -797,231 +1035,116 @@ class CPU:
         """Instrução NOP: No Operation."""
         # NOPs oficiais (como $EA) não fazem nada e não têm ciclos extras.
         # NOPs não oficiais podem ter modos de endereçamento que causam ciclos extras.
-        # Verificamos se o modo pode cruzar página e adicionamos ciclo se necessário.
-        _, page_crossed = addr_mode_func() # Chama a função do modo para avançar PC e checar página
-        # Apenas modos como ABX podem ter ciclo extra em NOPs não oficiais
-        if addr_mode_func in [self.ABX]: # Adicionar outros modos se mapear NOPs não oficiais
-             return 1 if page_crossed else 0
         return 0
 
     def XXX(self, addr_mode_func):
-        """Instrução XXX: Placeholder para Opcodes Ilegais/Não Implementados."""
-        # Obtém o endereço onde o opcode foi lido (PC já avançou)
-        opcode_addr = (self.regs.pc - 1) & 0xFFFF
-        opcode = self.read(opcode_addr)
-        logging.error(f"Opcode ILEGAL/NÃO IMPLEMENTADO encontrado: {opcode:02X} no endereço {opcode_addr:04X}")
-        # Considerar parar a execução ou apenas logar.
-        self.halted = True 
+        """Instrução ilegal ou não implementada."""
+        logging.error(f"Opcode ILEGAL/NÃO IMPLEMENTADO encontrado: {self.opcode:02X} no endereço {self.regs.pc-1:04X}")
         return 0
 
-    # --- Ciclo Principal da CPU e Tratamento de Interrupções ---
+    # --- Função Principal de Execução ---
     def clock(self):
-        """Executa um ciclo de instrução completo da CPU.
+        """Executa um ciclo da CPU.
         
-        Busca o opcode, decodifica, executa a instrução e calcula os ciclos.
-        Também verifica por interrupções (NMI, IRQ) antes de cada instrução.
+        Retorna:
+            int: Número de ciclos consumidos pela instrução.
         """
+        # Se a CPU estiver parada, não faz nada
         if self.halted:
-            return
-
-        # --- Verificação de Interrupções (NMI tem prioridade sobre IRQ) ---
-        # TODO: Implementar lógica de NMI (edge-triggered) e IRQ (level-triggered)
-        #       Por enquanto, chamadas manuais a self.nmi() e self.irq() funcionam.
-
-        # --- Ciclo de Instrução ---
-        # Guarda o PC no início do ciclo para logging/debugging
-        pc_start = self.regs.pc
-
-        # 1. Fetch: Lê o opcode da memória
-        opcode = self.fetch_byte()
+            return 0
+            
+        # Busca o opcode
+        self.opcode = self.fetch_byte()
         
-        # Reseta o contador de ciclos para esta instrução
-        self.cycles = 0
-
-        # 2. Decode: Obtém a função da instrução, modo de endereçamento e ciclos base
-        instruction_func, addr_mode_func, base_cycles = self.lookup[opcode]
+        # Decodifica o opcode usando a tabela de lookup
+        instr_func, addr_mode_func, cycles = self.lookup[self.opcode]
         
-        self.cycles += base_cycles
-
-        # 3. Execute: Chama a função da instrução, passando a função do modo de endereçamento.
-        # A função da instrução internamente chamará a função do modo de endereçamento
-        # para obter o endereço/operando e calcular ciclos adicionais (page cross, branch taken).
-        additional_cycles = instruction_func(addr_mode_func)
-        self.cycles += additional_cycles
-
-        # Atualiza o contador total de ciclos
-        self.total_cycles += self.cycles
-
-        # Log (opcional, pode ser útil para debugging)
-        # self._log_state(pc_start, opcode)
+        # Executa a instrução e obtém ciclos adicionais
+        extra_cycles = instr_func(addr_mode_func)
+        
+        # Atualiza o contador de ciclos
+        total_cycles = cycles + extra_cycles
+        self.cycles = total_cycles
+        self.total_cycles += total_cycles
+        
+        return total_cycles
 
     def reset(self):
-        """Simula o sinal de RESET da CPU.
+        """Reseta a CPU para o estado inicial.
         
-        Lê o vetor de reset (0xFFFC/FD), define o PC, reseta registradores e flags,
-        e consome os ciclos apropriados.
+        Isso simula o sinal de RESET do hardware:
+        1. Carrega PC do vetor de reset (FFFC/D)
+        2. Reseta registradores e flags para valores padrão
+        3. Desativa o modo decimal
+        4. Ativa a flag de interrupção
         """
-        logging.info("--- CPU RESET --- ")
-        # Lê o endereço inicial do vetor de reset
-        self.regs.pc = self.bus.read_word(0xFFFC)
-
-        # Reseta registradores para estado conhecido
-        self.regs.a = 0
-        self.regs.x = 0
-        self.regs.y = 0
-        self.regs.sp = 0xFD # Reset do Stack Pointer (padrão)
+        # Reseta registradores
+        self.regs = Registers()
         
-        # Reseta flags (I=1, U=1, B=0, D=0, outras=0)
-        self.regs.set_status_byte(0x00 | (1 << 5) | (1 << 2)) # U=1, I=1
-
+        # Carrega PC do vetor de reset
+        self.regs.pc = self.bus.read_word(0xFFFC)
+        
+        # Reseta contadores de ciclos
+        self.cycles = 0
+        self.total_cycles = 0
+        
+        # Desativa o modo halt
         self.halted = False
-        # Reset consome 8 ciclos (documentado em várias fontes)
-        self.cycles = 8
-        self.total_cycles = 0 # Zera contador total no reset
+        
+        # Reseta variáveis internas
+        self.addr_rel = 0
+        self.addr_abs = 0
+        self.opcode = 0
+        
+        # O reset leva 8 ciclos
+        return 8
 
     def irq(self):
-        """Simula uma Requisição de Interrupção (IRQ).
+        """Processa uma Interrupção (IRQ).
         
-        Só ocorre se a flag I (Interrupt Disable) estiver 0.
-        Empilha PC e Status, seta I=1, e carrega PC do vetor IRQ (0xFFFE/FF).
+        Se a flag I (Interrupt Disable) estiver setada, a interrupção é ignorada.
+        Caso contrário, empilha PC e status, e carrega PC do vetor de IRQ.
         """
-        if self.regs.i == 0: # Verifica se interrupções estão habilitadas
-            logging.info("--- IRQ --- ")
-            # Empilha PC (endereço da *próxima* instrução a ser executada)
-            self.push_word(self.regs.pc)
+        # Se a flag I estiver setada, ignora a interrupção
+        if self.regs.i == 1:
+            return 0
             
-            # Empilha Status Register (com B=0, U=1)
-            # A flag B interna não muda, mas é 1 no valor empilhado.
-            self.push_byte(self.regs.get_status_byte(pushing=True))
-            
-            # Seta a flag I para desabilitar novas IRQs
-            self.regs.i = 1
-            
-            # Carrega PC do vetor de IRQ/BRK
-            self.regs.pc = self.bus.read_word(0xFFFE)
-            
-            # IRQ consome 7 ciclos
-            self.cycles = 7
-            self.total_cycles += self.cycles
-        else:
-            logging.debug("IRQ ignorada (I=1)")
-
-    def nmi(self):
-        """Simula uma Interrupção Não-Mascarável (NMI).
-        
-        Ocorre independentemente da flag I.
-        Empilha PC e Status, seta I=1, e carrega PC do vetor NMI (0xFFFA/FB).
-        """
-        logging.info("--- NMI --- ")
-        # Empilha PC (endereço da *próxima* instrução a ser executada)
+        # Empilha PC
         self.push_word(self.regs.pc)
         
-        # Empilha Status Register (com B=0, U=1)
-        # A flag B interna não muda, mas é 1 no valor empilhado.
+        # Empilha status (com B=0, U=1)
+        # A flag B é 0 no valor empilhado para IRQ/NMI (diferente de BRK)
+        self.regs.b = 0
         self.push_byte(self.regs.get_status_byte(pushing=True))
         
-        # Seta a flag I (mesmo que NMI não seja mascarável, o handler pode ser interrompido por outra NMI)
+        # Seta a flag I para evitar interrupções aninhadas
+        self.regs.i = 1
+        
+        # Carrega PC do vetor de IRQ
+        self.regs.pc = self.bus.read_word(0xFFFE)
+        
+        # IRQ leva 7 ciclos
+        return 7
+
+    def nmi(self):
+        """Processa uma Interrupção Não-Mascarável (NMI).
+        
+        NMI não pode ser desabilitada pela flag I.
+        Empilha PC e status, e carrega PC do vetor de NMI.
+        """
+        # Empilha PC
+        self.push_word(self.regs.pc)
+        
+        # Empilha status (com B=0, U=1)
+        # A flag B é 0 no valor empilhado para IRQ/NMI (diferente de BRK)
+        self.regs.b = 0
+        self.push_byte(self.regs.get_status_byte(pushing=True))
+        
+        # Seta a flag I para evitar interrupções durante o handler de NMI
         self.regs.i = 1
         
         # Carrega PC do vetor de NMI
         self.regs.pc = self.bus.read_word(0xFFFA)
         
-        # NMI consome 8 ciclos
-        self.cycles = 8
-        self.total_cycles += self.cycles
-
-    # --- Funções Auxiliares de Debugging e Controle ---
-    def load_program(self, program_bytes, start_address):
-        """Carrega um programa (lista/bytearray de bytes) na memória do barramento.
-
-        Args:
-            program_bytes: Sequência de bytes do programa.
-            start_address (int): Endereço inicial onde carregar o programa.
-        """
-        offset = 0
-        for byte in program_bytes:
-            self.write(start_address + offset, byte)
-            offset += 1
-        end_address = start_address + offset - 1
-        logging.info(f"Programa ({offset} bytes) carregado de {start_address:04X} a {end_address:04X}")
-
-    def set_reset_vector(self, address):
-        """Define o endereço no vetor de reset (0xFFFC/FD) na memória.
-
-        Args:
-            address (int): O endereço de 16 bits para onde a CPU deve pular no reset.
-        """
-        self.write(0xFFFC, address & 0xFF) # Low byte
-        self.write(0xFFFD, (address >> 8) & 0xFF) # High byte
-        logging.info(f"Vetor de Reset (FFFC/FD) definido para {address:04X}")
-
-    def _log_state(self, pc_start, opcode):
-        """Função interna para logar o estado da CPU após uma instrução (para debugging)."""
-        # Formato similar ao log do Mesen ou Nintendulator
-        op_info = self.lookup[opcode]
-        instr_name = op_info[0].__name__ if op_info[0] else "???"
-        addr_mode_name = op_info[1].__name__ if op_info[1] else "???"
-        
-        # TODO: Formatar e imprimir o log completo se necessário
-        # log_str = (
-        #     f"{pc_start:04X}  {opcode:02X}       {instr_name} {addr_mode_name}    "
-        #     f"A:{self.regs.a:02X} X:{self.regs.x:02X} Y:{self.regs.y:02X} P:{self.regs.get_status_byte():02X} SP:{self.regs.sp:02X} CYC:{self.total_cycles}"
-        # )
-        # print(log_str)
-        pass
-
-# --- Exemplo de Uso (se executado diretamente) --- 
-if __name__ == "__main__":
-    bus = Bus()
-    cpu = CPU(bus)
-
-    # Programa teste: LDA #$C0, TAX, INX, PHA, LDA #$20, JSR $8010, PLA 
-    # (JSR apenas empilha PC-1 e salta, RTS desempilha e volta para PC+1)
-    program = [
-        0xA9, 0xC0,       # LDA #$C0   (A=C0, N=1, Z=0)
-        0xAA,             # TAX        (X=C0, N=1, Z=0)
-        0xE8,             # INX        (X=C1, N=1, Z=0)
-        0x48,             # PHA        (Push A=C0 to stack @ $01FD)
-        0xA9, 0x20,       # LDA #$20   (A=20, N=0, Z=0)
-        0x20, 0x10, 0x80, # JSR $8010  (Push $800A-1=$8009 to stack @ $01FC,$01FB, PC=$8010)
-        # --- Sub-rotina em $8010 ---
-        # (Simulada aqui, pois não há código em $8010 no exemplo)
-        # Suponha que $8010 contenha: 0x60 # RTS
-        # --- Fim da Sub-rotina ---
-        0x68,             # PLA        (Pull from stack @ $01FD -> A=C0, N=1, Z=0)
-        0x00              # BRK        (Stop execution)
-    ]
-    start_addr = 0x8000
-    cpu.load_program(program, start_addr)
-    
-    # Simula a sub-rotina em $8010 contendo apenas RTS
-    cpu.write(0x8010, 0x60) # RTS
-    
-    cpu.set_reset_vector(start_addr)
-    cpu.reset()
-
-    # Executa o programa
-    logging.info("Iniciando execução...")
-    instruction_count = 0
-    max_instructions = 20 
-    while not cpu.halted and instruction_count < max_instructions:
-        pc_before = cpu.regs.pc
-        opcode = bus.read(pc_before)
-        cpu.clock()
-        logging.info(f"PC:{pc_before:04X} Op:{opcode:02X} -> A:{cpu.regs.a:02X} X:{cpu.regs.x:02X} Y:{cpu.regs.y:02X} P:{cpu.regs.get_status_byte():02X} SP:{cpu.regs.sp:02X} CYC:{cpu.total_cycles}")
-        instruction_count += 1
-        if opcode == 0x00: # Para no BRK
-             logging.info("Instrução BRK encontrada, parando.")
-             # A própria instrução BRK já lida com a lógica de interrupção
-             # Poderíamos setar halted aqui se BRK não fosse implementado como interrupção
-             # cpu.halted = True 
-             break # Sai do loop de teste
-
-    logging.info("Execução concluída.")
-    logging.info(f"Valor final do Acumulador (A): {cpu.regs.a:02X}")
-    logging.info(f"Valor final do Registrador X: {cpu.regs.x:02X}")
-    logging.info(f"Valor final do Stack Pointer (SP): {cpu.regs.sp:02X}")
-    # Verifica o valor que foi empilhado por PHA e depois desempilhado por PLA
-    # O SP deve ter voltado ao valor inicial (FD) menos os 2 bytes do JSR que não foram desempilhados
-    logging.info(f"Valor esperado no topo da pilha (não desempilhado pelo RTS): {bus.read(0x0100 + ((cpu.regs.sp + 1) & 0xFF)):02X} {bus.read(0x0100 + ((cpu.regs.sp + 2) & 0xFF)):02X}")
-
+        # NMI leva 8 ciclos
+        return 8
