@@ -6,6 +6,8 @@ Este módulo contém testes para verificar o funcionamento correto das instruç�
 e modos de endereçamento implementados na classe CPU.
 """
 
+# TODO: imports para usar from Cpu import CPU, Bus, Registers e rode a suite de testes completa (`python -m unittest discover -v`) e corrija falhas (se houver)?
+
 import unittest
 from upload.Cpu import CPU, Bus, Registers
 
