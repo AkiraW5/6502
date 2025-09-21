@@ -1,8 +1,8 @@
 import sys
 import os
 import logging
-from assembler_6502_final import Assembler
-from upload.Cpu import CPU, Bus
+from src.assembler_6502_final import Assembler
+from src.Cpu import CPU, Bus
 
 class EmuladorIntegrado:
     """
@@ -25,7 +25,6 @@ class EmuladorIntegrado:
         self.program_size = 0
         self.symbols = {}
         
-        # Configuração de logging
         if debug_mode:
             logging.basicConfig(level=logging.DEBUG, 
                                format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,10 +46,8 @@ class EmuladorIntegrado:
             with open(asm_file, 'r') as f:
                 source = f.read()
                 
-            # Analisar o código para extrair o endereço de origem (.org)
             self.program_origin = self._extract_origin(source)
             
-            # Montar o código
             binary_code = self.assembler.assemble(source)
             self.program_size = len(binary_code)
             
@@ -73,7 +70,6 @@ class EmuladorIntegrado:
         Returns:
             int: Endereço de origem, ou 0x8000 se não encontrado.
         """
-        # Procura por diretiva .org no código
         lines = source.split('\n')
         for line in lines:
             line = line.strip()
@@ -81,14 +77,11 @@ class EmuladorIntegrado:
                 parts = line.split()
                 if len(parts) >= 2:
                     addr_str = parts[1].strip()
-                    # Converte endereço hexadecimal
                     if addr_str.startswith('$'):
                         return int(addr_str[1:], 16)
-                    # Converte endereço decimal
                     else:
                         return int(addr_str)
         
-        # Retorna endereço padrão se não encontrar .org
         return 0x8000
     
     def load_program(self, binary_code):
@@ -105,7 +98,6 @@ class EmuladorIntegrado:
             logging.error("Nenhum código binário para carregar")
             return False
         
-        # Carrega o código na memória a partir do endereço de origem
         for i, byte in enumerate(binary_code):
             self.bus.write(self.program_origin + i, byte)
         
@@ -123,10 +115,8 @@ class EmuladorIntegrado:
             bool: True se o reset foi bem-sucedido, False caso contrário.
         """
         try:
-            # Reseta a CPU
             self.cpu.reset()
             
-            # Define o endereço de início
             if start_address is not None:
                 self.cpu.regs.pc = start_address
             else:
@@ -152,12 +142,10 @@ class EmuladorIntegrado:
         cycles_executed = 0
         
         try:
-            # Executa o programa até encontrar BRK, atingir o limite de ciclos ou ser interrompido
             while not self.cpu.halted and cycles_executed < max_cycles:
                 if self.debug_mode:
                     self._print_debug_info()
                 
-                # Executa um ciclo de instrução
                 self.cpu.clock()
                 cycles_executed += self.cpu.cycles
             
@@ -177,7 +165,6 @@ class EmuladorIntegrado:
         pc = self.cpu.regs.pc
         opcode = self.bus.read(pc)
         
-        # Obtém a instrução e o modo de endereçamento
         instr_func, addr_mode_func, _ = self.cpu.lookup[opcode]
         instr_name = instr_func.__name__
         addr_mode_name = addr_mode_func.__name__
@@ -198,20 +185,16 @@ class EmuladorIntegrado:
         Returns:
             int: Número de ciclos executados, ou -1 em caso de erro.
         """
-        # Monta o arquivo
         binary_code = self.assemble_file(asm_file)
         if not binary_code:
             return -1
         
-        # Carrega o programa na memória
         if not self.load_program(binary_code):
             return -1
         
-        # Reseta a CPU e define o PC
         if not self.reset_cpu():
             return -1
         
-        # Executa o programa
         return self.run_program(max_cycles)
     
     def dump_memory(self, start_addr, end_addr, bytes_per_row=16):
@@ -230,10 +213,7 @@ class EmuladorIntegrado:
         result.append(f"Dump de memória (${start_addr:04X}-${end_addr:04X}):")
         
         for addr in range(start_addr, end_addr + 1, bytes_per_row):
-            # Endereço no início da linha
             line = f"${addr:04X}: "
-            
-            # Valores hexadecimais
             hex_values = []
             for offset in range(bytes_per_row):
                 if addr + offset <= end_addr:
@@ -242,13 +222,11 @@ class EmuladorIntegrado:
                 else:
                     hex_values.append("  ")
             line += " ".join(hex_values)
-            
-            # Caracteres ASCII
             ascii_values = []
             for offset in range(bytes_per_row):
                 if addr + offset <= end_addr:
                     value = self.bus.read(addr + offset)
-                    if 32 <= value <= 126:  # Caracteres ASCII imprimíveis
+                    if 32 <= value <= 126:
                         ascii_values.append(chr(value))
                     else:
                         ascii_values.append(".")
@@ -273,16 +251,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Cria o emulador integrado
     emulador = EmuladorIntegrado(debug_mode=args.debug)
     
-    # Monta, carrega e executa o programa
     cycles = emulador.assemble_and_run(args.asm_file, args.max_cycles)
     
     if cycles >= 0:
         print(f"Programa executado com sucesso. Ciclos executados: {cycles}")
         
-        # Exibe dump de memória se solicitado
         if args.dump_start and args.dump_end:
             start_addr = int(args.dump_start.replace('$', ''), 16)
             end_addr = int(args.dump_end.replace('$', ''), 16)

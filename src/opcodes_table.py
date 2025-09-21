@@ -307,7 +307,6 @@ OPCODE_TABLE = {
     },
 }
 
-# Função para obter o opcode e tamanho de uma instrução
 def get_opcode_info(instruction, addressing_mode):
     """
     Obtém o opcode e tamanho em bytes de uma instrução com o modo de endereçamento especificado.
@@ -323,7 +322,6 @@ def get_opcode_info(instruction, addressing_mode):
         return OPCODE_TABLE[instruction][addressing_mode]
     return None
 
-# Função para verificar se uma instrução suporta um modo de endereçamento
 def is_valid_addressing_mode(instruction, addressing_mode):
     """
     Verifica se uma instrução suporta o modo de endereçamento especificado.
@@ -337,7 +335,6 @@ def is_valid_addressing_mode(instruction, addressing_mode):
     """
     return instruction in OPCODE_TABLE and addressing_mode in OPCODE_TABLE[instruction]
 
-# Função para obter todos os modos de endereçamento suportados por uma instrução
 def get_supported_addressing_modes(instruction):
     """
     Obtém todos os modos de endereçamento suportados por uma instrução.

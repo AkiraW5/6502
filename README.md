@@ -1,38 +1,59 @@
-# 6502
+# Emulador 6502 (NES)
 
-This is a project for an emulator for the MOS 6502 microprocessor. The MOS 6502 is an 8-bit microprocessor that was very popular in the 70s an 80s. It was used in many computer systems and game consoles, including the Apple II, the Nintendo Entertainment System (NES), the Commodore 64, and many others.
+Este projeto é um emulador completo para o microprocessador MOS 6502, com foco na emulação do console Nintendo Entertainment System (NES). Ele inclui uma CPU 6502 funcional, uma Picture Processing Unit (PPU) para renderização de gráficos, um barramento de memória configurável, suporte a cartuchos (ROMs iNES), um assembler integrado e uma interface gráfica (GUI) interativa para depuração e execução de código.
 
-## Current Features 
+## Funcionalidades Principais
 
-The emulator currently implements the following features:
+*   **Emulação da CPU 6502:** Implementação detalhada das instruções e modos de endereçamento do 6502, incluindo tratamento de interrupções (IRQ, NMI, Reset) e contagem de ciclos.
+*   **Emulação da PPU (Picture Processing Unit):** Simulação dos registradores da PPU, VRAM, OAM e timing de scanline, com capacidade de renderizar a pattern table e nametables.
+*   **Barramento de Memória:** Um sistema de barramento flexível que permite o mapeamento de diferentes regiões de memória (RAM, ROM, registradores da PPU/APU).
+*   **Suporte a Cartuchos:** Carregamento de ROMs no formato iNES, com detecção e instalação de mappers (atualmente NROM/Mapper 0).
+*   **Assembler Integrado:** Um assembler de duas passagens para código 6502, com suporte a labels, diretivas (`.ORG`, `.BYTE`, `.WORD`, `.EQU`, `.DEFINE`) e detecção de modos de endereçamento.
+*   **Interface Gráfica (GUI):** Desenvolvida com Tkinter, oferece:
+    *   Editor de código Assembly com destaque de sintaxe e numeração de linhas.
+    *   Controles de emulação (Montar, Executar, Pausar, Passo a Passo, Resetar, Carregar ROM).
+    *   Visualização em tempo real do estado da CPU (registradores e flags).
+    *   Visualização de memória e disassembly.
+    *   Visualizador da PPU (pattern table/nametable) com zoom.
+    *   Console de log para mensagens do emulador.
+    *   Funcionalidade de Breakpoints para depuração.
 
-1. Opcode decoding (little).
-2. Addressing modes (complete/bugged).
-3. Instruction execution (partial/buggy).
+## Estrutura do Projeto
 
-## Future Features
+O projeto é organizado nos seguintes módulos:
 
-In the final version of the emulator, i plan to implement the following features:
+*   `Cpu.py`: Implementação da CPU 6502.
+*   `Bus.py`: Simulação do barramento de memória.
+*   `ppu.py`: Implementação da Picture Processing Unit (PPU).
+*   `cartridge.py`: Lógica para carregar e interpretar ROMs de cartucho.
+*   `mappers.py`: Implementação de mappers de memória (ex: NROMMapper).
+*   `assembler_6502_final.py`: O assembler de código 6502.
+*   `addressing_mode_detector.py`: Módulo auxiliar para detecção de modos de endereçamento no assembler.
+*   `opcodes_table.py`: Definição da tabela de opcodes do 6502.
+*   `macro_processor.py`: Módulo para processamento de macros no assembler.
+*   `emulador_gui.py`: A interface gráfica do usuário principal.
+*   `hardware_stub.py`: Stubs para hardware não implementado
 
-1. Complete instrucion set.
-2. Clock cycles (frequency).
-3. Compatibily: be able to run real 6502 programs an games on the emulator.
+## Como Usar
 
-## How to Use the emulator
+### Executando o Emulador
 
-You need to load a program into the emulator's memory and then start then program execution.
+Para iniciar a interface gráfica do emulador, execute o arquivo `emulador_gui.py` na raiz do projeto:
 
-## Contributions
+```bash
+python -m src.emulador_gui
+```
 
-Contributions to the project are welcome. If you find a bug or want to ad a new feature, feel free to open an issue or a pull request
+### Usando a GUI
 
-## License
-See the LICENSE file for more details.
+1.  **Editor de Código:** Escreva seu código Assembly 6502 no editor à esquerda.
+2.  **Montar:** Clique no botão "Montar" para converter seu código Assembly em código de máquina.
+3.  **Carregar ROM:** Use o botão "Carregar ROM" para carregar um arquivo `.nes` ou um binário puro.
+4.  **Executar/Pausar/Passo:** Controle a execução do emulador usando os botões correspondentes.
+5.  **Breakpoints:** Clique no `gutter` (área à esquerda dos números de linha) para adicionar ou remover breakpoints.
+6.  **Visualizações:** Acompanhe o estado da CPU, memória, disassembly e a saída da PPU nas seções à direita.
 
-### Observation
+## Contribuição
 
-This project is a fun hobby that I enjoy an is not intended for any future aspirations. It's simply tool for me to practice and improve my skills.
+Contribuições são bem-vindas! Sinta-se à vontade para abrir issues ou pull requests para melhorias, correções de bugs ou novas funcionalidades.
 
-#### Observation²
-
-The comments in the code that are not in English are possibly lines that I made only for testing purposes an will be removed in the future.

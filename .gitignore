@@ -160,3 +160,7 @@ cython_debug/
 #.idea/
 
 .obsidian/**
+.github/**
+.vscode/**
+src/__pycache__/**
+oam_dump.json
