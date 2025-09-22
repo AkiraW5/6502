@@ -268,10 +268,18 @@ class EmuladorGUI:
         except Exception:
             pass
 
-        # Console
-        console_frame = ttk.LabelFrame(right_frame, text="Console")
-        console_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Frame vertical para editor + console
+        editor_console_frame = ttk.Frame(right_frame)
+        editor_console_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Editor de assembly
+        self.code_editor = scrolledtext.ScrolledText(
+            editor_console_frame, wrap=tk.WORD, width=40, height=15)
+        self.code_editor.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=(5, 0))
+
+        # Console
+        console_frame = ttk.LabelFrame(editor_console_frame, text="Console")
+        console_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=(0, 5))
         self.console = scrolledtext.ScrolledText(
             console_frame, wrap=tk.WORD, width=40, height=5)
         self.console.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -342,14 +350,12 @@ class EmuladorGUI:
                     self.addr_line_map = {}
                     self.data_ranges = []
                     current_address = 0
-                    origin_set = False
                     for stmt in getattr(assembler, 'statements', []):
                         if getattr(stmt, 'directive', None) == '.ORG':
                             try:
                                 addr = assembler._parse_number(
                                     stmt.operands[0])
                                 current_address = addr
-                                origin_set = True
                             except Exception:
                                 pass
                         else:
@@ -365,35 +371,61 @@ class EmuladorGUI:
                 except Exception as e:
                     self.log(
                         f"Aviso: falha ao construir mapeamento endereço->linha: {e}")
-
-                self.update_memory_view()
-                self.update_disassembly()
-                self._refresh_gutter()
-            else:
-                self.log("Erro ao montar código: saída vazia do assembler.")
         except Exception as e:
             self.log(f"Erro ao montar código: {e}")
-            messagebox.showerror("Erro", f"Erro ao montar código: {e}")
 
-    def load_binary_to_memory(self):
-        if not self.binary_data:
-            return
-
-        self.reset_cpu()
-
-        start_address = 0x8000
-        for i, byte in enumerate(self.binary_data):
-            self.bus.write(start_address + i, byte)
-        try:
-            self.bus.write(0xFFFC, start_address & 0xFF)
-            self.bus.write(0xFFFD, (start_address >> 8) & 0xFF)
-        except Exception:
-            pass
-        self.cpu.regs.pc = start_address
-
-        self.log(
-            f"Código carregado na memória a partir de ${start_address:04X}.")
         self.update_cpu_state()
+
+    def update_memory_view(self):
+        # Limpa completamente o widget antes de inserir
+        self.memory_view.delete('1.0', tk.END)
+
+        # Mostra memória lendo via bus para garantir que mappers (banked PRG)
+        # sejam refletidos corretamente na visão (usa handlers instalados no bus).
+        if hasattr(self, 'binary_data') and self.binary_data:
+            start_addr = 0x8000
+            addr = start_addr
+            while addr <= 0xFFFF:
+                line = f"${addr:04X}: "
+                chunk = []
+                for i in range(16):
+                    curr_addr = addr + i
+                    if curr_addr > 0xFFFF:
+                        break
+                    try:
+                        b = self.bus.read(curr_addr)
+                    except Exception:
+                        b = 0xFF
+                    chunk.append(b)
+                    line += f"{b:02X} "
+                line += "  "
+                for b in chunk:
+                    if 32 <= b <= 126:
+                        line += chr(b)
+                    else:
+                        line += "."
+                self.memory_view.insert(tk.END, line + "\n")
+                addr += 16
+            # Garante que não há linhas extras
+            self.memory_view.delete(f"{(0xFFFF-0x8000)//16+2}.0", tk.END)
+        else:
+            # Fallback: mostra RAM
+            start_address = max(0, self.cpu.regs.pc - 64)
+            start_address = start_address & 0xFFF0
+            for i in range(16):
+                address = start_address + i * 16
+                line = f"${address:04X}: "
+                for j in range(16):
+                    byte = self.bus.read(address + j)
+                    line += f"{byte:02X} "
+                line += "  "
+                for j in range(16):
+                    byte = self.bus.read(address + j)
+                    if 32 <= byte <= 126:
+                        line += chr(byte)
+                    else:
+                        line += "."
+                self.memory_view.insert(tk.END, line + "\n")
 
     def load_rom(self):
         """Abre um arquivo .nes/.bin simples e mapeia PRG ROM em memória (NROM-like)."""
@@ -405,17 +437,31 @@ class EmuladorGUI:
         try:
             with open(rom_path, 'rb') as f:
                 data = f.read()
+            # Log dos primeiros 16 bytes do arquivo (cabeçalho iNES)
+            self.log(f"Primeiros 16 bytes do arquivo (cabeçalho iNES): {[hex(b) for b in data[:16]]}")
 
             prg = b''
             if len(data) >= 16 and data[0:4] == b'NES\x1A':
                 prg_size_units = data[4]
                 prg_size = prg_size_units * 16384
-                # Ignora trainer e flags, pega PRG a partir do offset 16 (+ trainer se presente)
                 trainer_present = (data[6] & 0x04) != 0
                 prg_start = 16 + (512 if trainer_present else 0)
+                # Carrega o PRG completo (não truncar). Mappers como UNROM
+                # dependem de múltiplos bancos PRG.
                 prg = data[prg_start:prg_start + prg_size]
+                self.log(f"PRG ROM: offset={prg_start} tamanho={len(prg)} trainer={'sim' if trainer_present else 'nao'}")
+                if len(prg) > 0:
+                    try:
+                        self.log(f"PRG primeiros bytes: {[hex(b) for b in prg[:8]]}")
+                        self.log(f"PRG ultimos bytes: {[hex(b) for b in prg[-8:]]}")
+                    except Exception:
+                        pass
             else:
                 prg = data
+                self.log(f"ROM sem cabeçalho iNES, tamanho={len(prg)}")
+                if len(prg) > 0:
+                    self.log(f"PRG primeiros bytes: {[hex(b) for b in prg[:8]]}")
+                    self.log(f"PRG ultimos bytes: {[hex(b) for b in prg[-8:]]}")
 
             prg_size = len(prg)
             if prg_size == 0:
@@ -425,9 +471,47 @@ class EmuladorGUI:
             self.reset_cpu()
 
             try:
-                from .mappers import NROMMapper
-                mapper = NROMMapper(prg)
+                # Detect mapper id from iNES header (if present in `data`) and
+                # choose the appropriate mapper implementation.
+                mapper_id = None
+                try:
+                    if len(data) >= 16 and data[0:4] == b'NES\x1A':
+                        mapper_id = (data[6] >> 4) | (data[7] & 0xF0)
+                except Exception:
+                    mapper_id = None
+
+                if mapper_id == 2:
+                    from .mappers import UNROMMapper
+                    mapper = UNROMMapper(prg)
+                else:
+                    from .mappers import NROMMapper
+                    mapper = NROMMapper(prg)
+
                 self.bus.install_mapper(mapper)
+                # Se disponível, registrar callback para atualizações quando o
+                # mapper realizar uma operação (por exemplo, troca de banco).
+                try:
+                    if hasattr(self.bus, 'set_mapper_callback'):
+                        def _on_mapper_change():
+                            try:
+                                self.update_memory_view()
+                            except Exception:
+                                pass
+                            try:
+                                self.update_disassembly()
+                            except Exception:
+                                pass
+
+                        try:
+                            self.bus.set_mapper_callback(_on_mapper_change)
+                        except Exception:
+                            # Fallback: set attribute directly
+                            try:
+                                self.bus.mapper_write_callback = _on_mapper_change
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 # Instalar hardware stub (PPU registers + controllers)
                 try:
                     from .hardware_stub import SimpleHardware
@@ -490,7 +574,35 @@ class EmuladorGUI:
                 self.log(f"Erro ao instalar mapper: {e}")
                 return
 
-            self.cpu.regs.pc = 0x8000
+            # Inicializa PC pelo vetor de reset da ROM.
+            # Lemos via bus.read(0xFFFC/0xFFFD) para respeitar mappers
+            # que mapeiam PRG em bancos/handlers (UNROM/NROM etc.).
+            try:
+                lo = self.bus.read(0xFFFC)
+                hi = self.bus.read(0xFFFD)
+                reset_vector = (hi << 8) | lo
+                if 0x8000 <= reset_vector < 0x10000:
+                    self.cpu.regs.pc = reset_vector
+                else:
+                    self.cpu.regs.pc = 0x8000
+                    self.log("Vetor de reset inválido na ROM, usando $8000.")
+            except Exception:
+                # Fallback: use bytes from PRG (calculated for mapping at $8000)
+                try:
+                    if len(prg) >= 4:
+                        # reset vector located at PRG offset (prg_len - 4)/(prg_len - 3)
+                        reset_lo = prg[-4]
+                        reset_hi = prg[-3]
+                        reset_vector = (reset_hi << 8) | reset_lo
+                        self.cpu.regs.pc = reset_vector if (0x8000 <= reset_vector < 0x10000) else 0x8000
+                    else:
+                        self.cpu.regs.pc = 0x8000
+                except Exception:
+                    self.cpu.regs.pc = 0x8000
+            # Não escrevemos os bytes do PRG diretamente no barramento aqui.
+            # Mappers instalados no bus (NROM/UNROM) expõem leituras apropriadas
+            # via handlers; gravar no barramento pode acionar writes de seleção
+            # de banco (no caso de UNROM) e corromper o estado do mapper.
             try:
                 self.binary_data = bytearray(prg)
             except Exception:
@@ -989,24 +1101,14 @@ class EmuladorGUI:
                         0, 0, anchor=tk.NW, image=photo)
                     try:
                         if getattr(self, 'show_sprites_var', None) and self.show_sprites_var.get() and hasattr(self.ppu, 'oam'):
-                            self.ppu_canvas.delete('ppu_sprite_overlay')
-                            oam = getattr(self.ppu, 'oam')
-                            for si in range(0, min(len(oam), 256), 4):
-                                try:
-                                    y = oam[si]
-                                    tile = oam[si+1]
-                                    attr = oam[si+2]
-                                    x = oam[si+3]
-                                    if y == 0xFF:
-                                        continue
-                                    sx = int(x) * scale
-                                    sy = int(y) * scale
-                                    ex = sx + 8 * scale
-                                    ey = sy + 8 * scale
-                                    self.ppu_canvas.create_rectangle(
-                                        sx, sy, ex, ey, outline='red', width=1, tags=('ppu_sprite_overlay',))
-                                except Exception:
-                                    pass
+                            try:
+                                self.ppu_canvas.delete('ppu_sprite_overlay')
+                            except Exception:
+                                pass
+                            try:
+                                self._draw_sprite_overlay(int(self.ppu_scale_var.get()) if hasattr(self, 'ppu_scale_var') else 1)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                     return
@@ -1259,30 +1361,69 @@ class EmuladorGUI:
         self.reg_flags.config(text=flags)
 
     def update_memory_view(self):
-        self.memory_view.delete(1.0, tk.END)
+        """Mostra a memória na UI.
 
-        start_address = max(0, self.cpu.regs.pc - 64)
-        start_address = start_address & 0xFFF0
+        Se uma ROM foi carregada (`self.binary_data`), mostra o mapeamento PRG de
+        $8000 a $FFFF (preenchendo com $FF quando a ROM for menor que 32KB).
+        Caso contrário, exibe a vizinhança do PC na RAM.
+        """
+        # Limpa completamente o widget antes de inserir
+        try:
+            self.memory_view.delete('1.0', tk.END)
+        except Exception:
+            try:
+                self.memory_view.delete(1.0, tk.END)
+            except Exception:
+                pass
 
+        # Se ROM carregada, mostrar PRG em $8000-$FFFF
+        if getattr(self, 'binary_data', None):
+            prg = self.binary_data
+            prg_len = len(prg)
+            start_addr = 0x8000
+            addr = start_addr
+            while addr <= 0xFFFF:
+                line = f"${addr & 0xFFFF:04X}: "
+                chunk = []
+                for i in range(16):
+                    curr_addr = addr + i
+                    if curr_addr > 0xFFFF:
+                        break
+                    offset = curr_addr - start_addr
+                    if 0 <= offset < prg_len:
+                        b = prg[offset]
+                    else:
+                        b = 0xFF
+                    chunk.append(b)
+                    line += f"{b:02X} "
+                line += "  "
+                for b in chunk:
+                    line += chr(b) if 32 <= b <= 126 else "."
+                self.memory_view.insert(tk.END, line + "\n")
+                addr += 16
+            # Garantir que não sobrou conteúdo após última linha válida
+            try:
+                last_line_index = (0xFFFF - 0x8000) // 16 + 1
+                # linhas são 1-based no Text widget
+                self.memory_view.delete(f"{last_line_index+1}.0", tk.END)
+            except Exception:
+                pass
+            return
+
+        # Fallback: mostrar RAM ao redor do PC
+        start_address = max(0, self.cpu.regs.pc - 64) & 0xFFF0
         for i in range(16):
-            address = start_address + i * 16
+            address = (start_address + i * 16) & 0xFFFF
             line = f"${address:04X}: "
-
             for j in range(16):
-                byte = self.bus.read(address + j)
+                byte = self.bus.read((address + j) & 0xFFFF)
                 line += f"{byte:02X} "
-
-                if address + j == self.cpu.regs.pc:
+                if ((address + j) & 0xFFFF) == (self.cpu.regs.pc & 0xFFFF):
                     line = line[:-1] + "*"
-
             line += "  "
             for j in range(16):
-                byte = self.bus.read(address + j)
-                if 32 <= byte <= 126:
-                    line += chr(byte)
-                else:
-                    line += "."
-
+                byte = self.bus.read((address + j) & 0xFFFF)
+                line += chr(byte) if 32 <= byte <= 126 else "."
             self.memory_view.insert(tk.END, line + "\n")
 
     def update_disassembly(self):
@@ -1415,8 +1556,14 @@ class EmuladorGUI:
             addr = (addr + size) & 0xFFFF
 
     def log(self, message):
-        self.console.insert(tk.END, message + "\n")
-        self.console.see(tk.END)
+        # Imprime no console da GUI
+        try:
+            self.console.insert(tk.END, message + "\n")
+            self.console.see(tk.END)
+        except Exception:
+            pass
+        # Sempre imprime no terminal
+        print(message)
 
     def _highlight_source_line(self, line_no):
         try:
@@ -1531,6 +1678,33 @@ class EmuladorGUI:
     def _render_ppu(self):
         """Função auxiliar para renderizar a tabela de padrões selecionada usando os controles atuais da interface."""
         try:
+            # Dump OAM antes da renderização
+            try:
+                ppu = getattr(self, 'ppu', None)
+                oam_attr = getattr(ppu, 'oam', None) if ppu is not None else None
+                if ppu and oam_attr:
+                    oam = bytes(oam_attr)
+                    sprites = []
+                    for i in range(0, min(len(oam), 256), 4):
+                        y = oam[i]
+                        tile = oam[i+1]
+                        attr = oam[i+2]
+                        x = oam[i+3]
+                        if y == 0xFF:
+                            continue
+                        sprites.append({
+                            'index': i//4,
+                            'x': int(x),
+                            'y': int(y),
+                            'tile': int(tile),
+                            'attr': int(attr)
+                        })
+                    import json, os
+                    out_path = os.path.join(os.getcwd(), 'oam_dump_pre_render.json')
+                    with open(out_path, 'w', encoding='utf-8') as jf:
+                        json.dump(sprites, jf, indent=2)
+            except Exception:
+                pass
             table = int(self.ppu_table_var.get()) if hasattr(
                 self, 'ppu_table_var') else 0
             scale = int(self.ppu_scale_var.get()) if hasattr(
@@ -1538,6 +1712,121 @@ class EmuladorGUI:
             if hasattr(self, 'ppu') and self.ppu and hasattr(self, 'ppu_canvas'):
                 self.ppu.render_pattern_table(
                     self.ppu_canvas, table_index=table, scale=scale)
+            # Dump OAM após renderização
+            try:
+                ppu = getattr(self, 'ppu', None)
+                oam_attr = getattr(ppu, 'oam', None) if ppu is not None else None
+                if ppu and oam_attr:
+                    oam = bytes(oam_attr)
+                    sprites = []
+                    for i in range(0, min(len(oam), 256), 4):
+                        y = oam[i]
+                        tile = oam[i+1]
+                        attr = oam[i+2]
+                        x = oam[i+3]
+                        if y == 0xFF:
+                            continue
+                        sprites.append({
+                            'index': i//4,
+                            'x': int(x),
+                            'y': int(y),
+                            'tile': int(tile),
+                            'attr': int(attr)
+                        })
+                    import json, os
+                    out_path = os.path.join(os.getcwd(), 'oam_dump_post_render.json')
+                    with open(out_path, 'w', encoding='utf-8') as jf:
+                        json.dump(sprites, jf, indent=2)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _draw_sprite_overlay(self, scale: int = 1):
+        """Desenha os sprites do OAM sobre o canvas da PPU usando pixels reais do CHR.
+
+        Esta função decodifica cada sprite a partir do OAM (Y, tile, attr, X),
+        lê o tile nas CHR do PPU (self.ppu.chr), aplica flip X/Y e usa a
+        paleta da PPU (quando disponível) para escolher cores.
+        """
+        try:
+            ppu = getattr(self, 'ppu', None)
+            if not ppu:
+                return
+            oam = getattr(ppu, 'oam', None)
+            if not oam:
+                return
+            chr_bytes = getattr(ppu, 'chr', b'') or b''
+            # palette read helper: returns hex color
+            def pal_color(pal_index: int) -> str:
+                try:
+                    pal_byte = ppu._palette_read(pal_index)
+                    color_idx = pal_byte & 0x3F
+                    return ppu.NES_PALETTE[color_idx] if color_idx < len(ppu.NES_PALETTE) else ppu.NES_PALETTE[0]
+                except Exception:
+                    return '#FF00FF'
+
+            # tile pixel decoder (8x8) using PPU logic
+            def decode_tile(tidx: int):
+                base = tidx * 16
+                if base + 15 >= len(chr_bytes):
+                    return [[0]*8 for _ in range(8)]
+                plane0 = chr_bytes[base:base+8]
+                plane1 = chr_bytes[base+8:base+16]
+                pixels = [[0]*8 for _ in range(8)]
+                for y in range(8):
+                    b0 = plane0[y]
+                    b1 = plane1[y]
+                    for x in range(8):
+                        bit = 7 - x
+                        lo = (b0 >> bit) & 1
+                        hi = (b1 >> bit) & 1
+                        pixels[y][x] = (hi << 1) | lo
+                return pixels
+
+            # Draw each sprite (OAM entries are 4 bytes: Y, tile, attr, X)
+            for si in range(0, min(len(oam), 256), 4):
+                try:
+                    y = oam[si]
+                    tile = oam[si+1]
+                    attr = oam[si+2]
+                    x = oam[si+3]
+                    if y == 0xFF:
+                        continue
+                    # NES stores Y as top of sprite minus 1
+                    sx = int(x)
+                    sy = int(y) + 1
+                    if sy < -8 or sy > 255 or sx < -8 or sx > 511:
+                        continue
+
+                    palette_select = attr & 0x3
+                    flip_h = bool(attr & 0x40)
+                    flip_v = bool(attr & 0x80)
+
+                    tile_pixels = decode_tile(tile)
+
+                    # For each pixel in 8x8 tile, map through palette and draw
+                    for ry in range(8):
+                        for rx in range(8):
+                            pixx = rx if not flip_h else (7 - rx)
+                            pixy = ry if not flip_v else (7 - ry)
+                            pv = tile_pixels[pixy][pixx] & 0x3
+                            if pv == 0:
+                                continue  # transparent in sprite
+                            pal_base = palette_select * 4
+                            pal_index = pal_base + pv
+                            color = pal_color(pal_index)
+                            x0 = (sx + rx) * scale
+                            y0 = (sy + ry) * scale
+                            x1 = x0 + scale
+                            y1 = y0 + scale
+                            try:
+                                self.ppu_canvas.create_rectangle(
+                                    x0, y0, x1, y1, outline=color, fill=color, tags=('ppu_sprite_overlay',))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
         except Exception:
             pass
 

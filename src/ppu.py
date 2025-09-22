@@ -12,8 +12,16 @@ API:
     render_pattern_table(canvas, table_index=0, scale=2)
 
 """
+# TODO: Adicionar suporte a mirroring de name table e atributos
 from typing import Optional, Callable, Any
 import logging
+import os, sys, time
+
+# Module-load diagnostic: helps confirm which file/version is imported at runtime
+try:
+    print(f"[MODULE LOAD] src.ppu __file__={__file__} cwd={os.getcwd()} pid={os.getpid()} ts={time.time()}")
+except Exception:
+    print("[MODULE LOAD] src.ppu loaded (path unknown)")
 try:
     from typing import Protocol  # type: ignore
     PPUProtocol = Protocol  # type: ignore
@@ -24,49 +32,8 @@ except Exception:
 class SimplePPU:
     def __init__(self, chr_bytes: Optional[bytes] = None):
         self.chr = chr_bytes or b''
-        self.regs = {
-            0x2000: 0,
-            0x2001: 0,
-            0x2002: 0,
-            0x2003: 0,
-            0x2004: 0,
-            0x2005: 0,
-            0x2006: 0,
-            0x2007: 0,
-        }
-        self._addr_latch = 0
-        self.oam = bytearray(256)
-        self.nmi_callback: Optional[Callable[[], None]] = None
-
-    def ppu_read_register(self, addr: int) -> int:
-        addr = 0x2000 | (addr & 0x7)
-        if addr == 0x2002:
-            return self.regs[0x2002]
-        return self.regs.get(addr, 0)
-
-    def ppu_write_register(self, addr: int, val: int):
-        addr = 0x2000 | (addr & 0x7)
-        if addr == 0x2006:
-            if self._addr_latch == 0:
-                self._addr_latch = (val & 0xFF) << 8
-            else:
-                self._addr_latch = (self._addr_latch & 0xFF00) | (val & 0xFF)
-            self.regs[0x2006] = self._addr_latch & 0xFFFF
-            self._addr_latch = 0 if self._addr_latch else 1
-            return
-        if addr == 0x2007:
-            self.regs[0x2007] = val & 0xFF
-            return
-        self.regs[addr] = val & 0xFF
-
-    def oam_dma(self, bus, page: int):
-        base = (page & 0xFF) << 8
-        for i in range(256):
-            try:
-                self.oam[i] = bus.read((base + i) & 0xFFFF)
-            except Exception:
-                self.oam[i] = 0
-
+    def set_chr(self, chr_bytes: bytes):
+        self.chr = chr_bytes or b''
     def set_chr(self, chr_bytes: bytes):
         self.chr = chr_bytes or b''
 
@@ -330,12 +297,89 @@ class FullPPU:
             return 0
 
     def oam_dma(self, bus, page: int):
+        import json, os, traceback
         base = (page & 0xFF) << 8
+
+        # 1) Ler 256 bytes da RAM (fonte DMA)
+        ram_bloco = []
+        try:
+            ram_bloco = [bus.read((base + i) & 0xFFFF) for i in range(256)]
+        except Exception:
+            # fallback: preencher zeros caso a leitura falhe
+            ram_bloco = [0] * 256
+
+        # 2) Salvar dump da RAM (CWD e ABS)
+        try:
+            out_cwd = os.path.join(os.getcwd(), f'ram_dma_page_{page:02X}.json')
+            print(f"[FullPPU.oam_dma] Tentando dump da RAM em: {out_cwd}", flush=True)
+            with open(out_cwd, 'w', encoding='utf-8') as jf:
+                json.dump(ram_bloco, jf, indent=2)
+            print(f"[FullPPU.oam_dma] Dump da RAM salvo com sucesso: {out_cwd}", flush=True)
+        except Exception as e:
+            print(f"[FullPPU.oam_dma] Falha ao salvar dump da RAM (CWD): {e}", flush=True)
+            traceback.print_exc()
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            out_abs = os.path.join(repo_root, f'ram_dma_page_{page:02X}.json')
+            with open(out_abs, 'w', encoding='utf-8') as jf2:
+                json.dump(ram_bloco, jf2, indent=2)
+            print(f"[FullPPU.oam_dma] Dump da RAM salvo (ABS): {out_abs}", flush=True)
+        except Exception as e:
+            print(f"[FullPPU.oam_dma] Falha ao salvar dump da RAM (ABS): {e}", flush=True)
+            traceback.print_exc()
+
+        # 3) Preencher OAM com os bytes lidos
         for i in range(256):
             try:
-                self.oam[i] = bus.read((base + i) & 0xFFFF)
+                self.oam[i] = int(ram_bloco[i]) & 0xFF
             except Exception:
                 self.oam[i] = 0
+
+        # 4) Salvar OAM dump (CWD e ABS)
+        try:
+            out_oam_cwd = os.path.join(os.getcwd(), 'oam_dump_dma.json')
+            print(f"[FullPPU.oam_dma] Writing OAM dump to: {out_oam_cwd}", flush=True)
+            with open(out_oam_cwd, 'w', encoding='utf-8') as jf:
+                json.dump({'page': page, 'base': base, 'oam': list(self.oam)}, jf, indent=2)
+            print(f"[FullPPU.oam_dma] OAM dump salvo (CWD): {out_oam_cwd}", flush=True)
+        except Exception as e:
+            print(f"[FullPPU.oam_dma] Failed to save OAM dump (CWD): {e}", flush=True)
+            traceback.print_exc()
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            out_oam_abs = os.path.join(repo_root, 'oam_dump_dma.json')
+            with open(out_oam_abs, 'w', encoding='utf-8') as jf2:
+                json.dump({'page': page, 'base': base, 'oam': list(self.oam)}, jf2, indent=2)
+            print(f"[FullPPU.oam_dma] OAM dump salvo (ABS): {out_oam_abs}", flush=True)
+        except Exception as e:
+            print(f"[FullPPU.oam_dma] Failed to save OAM dump (ABS): {e}", flush=True)
+            traceback.print_exc()
+
+        # 5) Salvar debug do CHR (CWD e ABS)
+        try:
+            chr_info = {
+                'chr_len': len(getattr(self, 'chr', b'')),
+                'chr_head': list(getattr(self, 'chr', b'')[:64])
+            }
+            out_chr_cwd = os.path.join(os.getcwd(), 'ppu_chr_debug.json')
+            print(f"[FullPPU.oam_dma] Writing CHR debug to: {out_chr_cwd} (len={chr_info['chr_len']})", flush=True)
+            with open(out_chr_cwd, 'w', encoding='utf-8') as jf:
+                json.dump(chr_info, jf, indent=2)
+            print(f"[FullPPU.oam_dma] CHR debug salvo (CWD): {out_chr_cwd}", flush=True)
+        except Exception as e:
+            print(f"[FullPPU.oam_dma] Failed to save CHR debug (CWD): {e}", flush=True)
+            traceback.print_exc()
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            out_chr_abs = os.path.join(repo_root, 'ppu_chr_debug.json')
+            with open(out_chr_abs, 'w', encoding='utf-8') as jf2:
+                json.dump(chr_info, jf2, indent=2)
+            print(f"[FullPPU.oam_dma] CHR debug salvo (ABS): {out_chr_abs}", flush=True)
+        except Exception as e:
+            print(f"[FullPPU.oam_dma] Failed to save CHR debug (ABS): {e}", flush=True)
+            traceback.print_exc()
+
+        # 6) Marcar DMA ativo (emulação de timing)
         self._oam_dma_cycles = 514
         self._oam_dma_active = True
         try:
@@ -460,6 +504,49 @@ class FullPPU:
                                 self._logger.debug(f"FullPPU: DETAILED pv={pv} pal_byte=${pal_byte:02X} color_idx={color_idx} color={color}")
                     except Exception:
                         pass
+            except Exception:
+                pass
+            # Gravando dumps de debug (OAM e CHR) para diagnóstico
+            try:
+                import json, os
+                out_oam = os.path.join(os.getcwd(), 'oam_dump_dma.json')
+                try:
+                    with open(out_oam, 'w', encoding='utf-8') as jf:
+                        json.dump({'page': base, 'oam': list(self.oam)}, jf, indent=2)
+                except Exception:
+                    pass
+                chr_info = {
+                    'chr_len': len(getattr(self, 'chr', b'')),
+                    'chr_head': list((getattr(self, 'chr', b'')[:64]))
+                }
+                out_chr = os.path.join(os.getcwd(), 'ppu_chr_debug.json')
+                try:
+                    with open(out_chr, 'w', encoding='utf-8') as jf:
+                        json.dump(chr_info, jf, indent=2)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Adicional: salvar dump de OAM e debug do CHR quando FullPPU é usado
+            try:
+                import json, os
+                out_path2 = os.path.join(os.getcwd(), 'oam_dump_dma.json')
+                try:
+                    with open(out_path2, 'w', encoding='utf-8') as jf:
+                        json.dump({'page': base, 'oam': list(self.oam)}, jf, indent=2)
+                except Exception:
+                    pass
+                # salvar debug do CHR
+                chr_info = {
+                    'chr_len': len(getattr(self, 'chr', b'')),
+                    'chr_head': list((getattr(self, 'chr', b'')[:64]))
+                }
+                out_chr = os.path.join(os.getcwd(), 'ppu_chr_debug.json')
+                try:
+                    with open(out_chr, 'w', encoding='utf-8') as jf:
+                        json.dump(chr_info, jf, indent=2)
+                except Exception:
+                    pass
             except Exception:
                 pass
         for ty in range(30):

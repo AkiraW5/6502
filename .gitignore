@@ -163,4 +163,4 @@ cython_debug/
 .github/**
 .vscode/**
 src/__pycache__/**
-oam_dump.json
+oam_*.json
